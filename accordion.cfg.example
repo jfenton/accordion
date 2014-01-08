@@ -1,0 +1,32 @@
+{
+	"db": {
+		"host": "localhost:3306",
+		"username": "YOUR MYSQL USERNAME",
+		"password": "YOUR MYSQL PASSWORD",
+		"database": "YOUR MYSQL DATABASE NAME"
+	},
+	"sf": {
+		"username": "YOUR SALESFORCE USERNAME",
+		"password": "YOUR SALESFORCE PASSWORD",
+		"security_token": "YOUR SALESFORCE SECURITY TOKEN"
+	},
+	"objects": [
+		{
+			"src": "sf", "srcTable": "Account", "srcPrimaryKey":"Id",
+			"dst": "db", "dstTable": "t_client", "lastModifiedField":"last_modified",
+			"fields":[
+				"Id->salesforce_id",
+				"Name->fullname"
+			]
+		},
+                {
+                        "src": "sf", "srcTable": "Contact", "srcPrimaryKey":"Id",
+                        "dst": "db", "dstTable": "t_client_contact", "lastModifiedField":"last_modified",
+                        "fields":[
+                                "Id->salesforce_id",
+                                "Name->fullname",
+                                "AccountId->LOOKUP(t_client,salesforce_id,client_id)->client_id"
+                        ]
+                }
+        ]
+}
