@@ -138,6 +138,7 @@ logger(0, 'Accordion starting...');
 logger(0, 'Accordion loading configuration...');
 $json_raw = file_get_contents('accordion.cfg');
 $cfg = json_decode($json_raw);
+if(!$cfg) { die("Error parsing accordion.cfg!\n"); }
 $objs = $cfg->{'objects'};
 
 define("USERNAME", $cfg->{'sf'}->{'username'});
