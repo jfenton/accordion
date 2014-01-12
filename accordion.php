@@ -381,6 +381,7 @@ foreach($objs as $objname => $obj) {
 			$sql = "INSERT INTO ".$obj->{"dstTable"}."(".join(",", $dstFields).") VALUES (".join(',', $dstFieldPlaceholders).") ON DUPLICATE KEY UPDATE ".join(",", $dstFieldDuplicateKeyUpdate);
 			logger(3, "INSERT SQL: {$sql}");
 			$stmt = mysqli_prepare($link, $sql);
+			if(!$stmt) { logger(2, 'ERROR: '.mysqli_error($link)); }
 
 			// Create a string of all field types in order e.g. sssid (for string, string, string, integer, decimal)
 			$dstPlaceholderTypes = join("", $dstFieldTypes);
@@ -410,6 +411,7 @@ foreach($objs as $objname => $obj) {
 				call_user_func_array('mysqli_stmt_bind_param', array_merge(array($stmt, $dstPlaceholderTypes), $bindParams));
 
 				if(!$stmt->execute()) {
+//					array_push($errors, array('Id' => $datum['src']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_MYSQL: '.mysqli_error($link)."\n".print_r($data[i], true)."\n".date("d/m/Y H:i:s", time())));
 					array_push($errors, array('Id' => $datum['src']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_MYSQL: '.mysqli_error($link)));
 				}
 			}
@@ -505,13 +507,15 @@ foreach($objs as $objname => $obj) {
 				if($entry['Success'] == 'false') {
 					logger(2, "ERROR: ".$entry['Error']);
 					logger(2, print_r($data[$i], true));
-					array_push($errors, array('Id' => $data[$i]['dst']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_SALESFORCE: '.$entry['Error']));
+					array_push($errors, array('Id' => $data[$i]['dst']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_SALESFORCE: '.$entry['Error']."\n".print_r($data[i], true)."\n".date("d/m/Y H:i:s", time())));
 				}
 				$i++;
 			}
 	*/
 		}
 	}
+
+	logger(3, print_r($errors, true));
 
 	if(count($errors) == 0) {
 		logger(2, 'No record errors to upload to Salesforce.');
@@ -528,7 +532,7 @@ foreach($objs as $objname => $obj) {
 		rewind($csvfh);
 		$csv = stream_get_contents($csvfh);
 
-		// logger(3, print_r($csv, true));
+		logger(3, print_r($csv, true));
 
 		$job = new JobInfo();
 		if($obj->{'src'} === "sf") {
