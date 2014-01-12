@@ -297,18 +297,10 @@ foreach($objs as $objname => $obj) {
 					$lookupUsing = $filterArgs[1];
 					$thenUse = $filterArgs[2];
 
-					$fastPath = array();
 					$lookupFieldValues = array();
 					foreach($data as &$datum) {
-						// Construct a fast path from the field value we're looking for, back to the requesting datum(s)
+						// Add the field value we're looking for to an array, to be unique'd and passed to the IN operand
 						$key = $datum['src'][$srcField];
-						if(array_key_exists($key, $fastPath)) {
-							array_push($fastPath[$key], $datum);
-						} else {
-							$fastPath[$key] = array(&$datum);
-						}
-						
-						// Add the field value we're looking for to an array, to be passed to the IN operand
 						array_push($lookupFieldValues, '"'.$key.'"');
 					}
 					unset($datum);
@@ -318,11 +310,16 @@ foreach($objs as $objname => $obj) {
 					logger(4, 'SQL:'.$sql);
 					$stmt = mysqli_query($link, $sql);
 					if(!$stmt) { logger(4, 'ERROR: '.mysqli_error($link)); }
+					$map = array();
 					while($result = mysqli_fetch_array($stmt, MYSQLI_ASSOC)) {
-						// Correlate the result to the requesting datum using the fastPath dict we built earlier
-						foreach($fastPath[$result[$lookupUsing]] as &$datum) {
-							// Populate each destination datum that required this value
-							$datum['dst'][$thenUse] = $result[$thenUse];
+						$map[$result[$lookupUsing]] = $result[$thenUse];
+					}
+					
+					foreach($data as &$datum) {
+						if(array_key_exists($datum['src'][$srcField], $map)) {
+							$datum['dst'][$dstField] = $map[ $datum['src'][$srcField] ];
+						} else {
+							logger(4, 'Unable to find a mapping for: ' + $datum['src'][$srcField]);
 						}
 					}
 				} else if($filterCmd == 'SPLIT') {
