@@ -190,8 +190,13 @@ foreach($objs as $objname => $obj) {
 	foreach($obj->{'fields'} as $field) {
 		$fieldComponents = explode("->", $field);
 		$srcField = $fieldComponents[0];
-		if($srcField != NULL) 
-			array_push($selectFields, $srcField);
+		if($srcField != NULL) {
+			$matches = preg_match_all("/^(\d+|'.*')$/", $srcField, $srcFieldValue, PREG_SET_ORDER);
+			logger(2, $matches);
+			if($matches == 0) {
+				array_push($selectFields, $srcField);
+			}
+		}
 	}
 
 	$data = array();
@@ -335,14 +340,24 @@ foreach($objs as $objname => $obj) {
 					}
 				}
 			} else if($numpipes == 1) {
-				// Straight - mapping of field to another field name
-				preg_match_all("/^(.*)->(.*)$/", $field, $pipes, PREG_SET_ORDER);
-				$srcField = $pipes[0][1];
-				$dstField = $pipes[0][2];
-				foreach($data as &$datum) {
-					$datum['dst'][$dstField] = $datum['src'][$srcField];
+				$matches = preg_match_all("/^(\d+|'[^']+')->(.*)$/", $field, $srcField, PREG_SET_ORDER);
+				if($matches == 1) {
+					// Straight - mapping of field to a static value e.g. 42->life_universe or 'turtles'->all_way_down
+					$srcFieldValue = $srcField[0][1];
+					$dstField = $srcField[0][2];
+					foreach($data as &$datum) {
+						$datum['dst'][$dstField] = $srcFieldValue;
+					}
+				} else {
+					// Straight - mapping of field to another field name
+					preg_match_all("/^(.*)->(.*)$/", $field, $pipes, PREG_SET_ORDER);
+					$srcField = $pipes[0][1];
+					$dstField = $pipes[0][2];
+					foreach($data as &$datum) {
+						$datum['dst'][$dstField] = $datum['src'][$srcField];
+					}
+					unset($datum);
 				}
-				unset($datum);
 			}
 		}
 
