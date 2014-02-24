@@ -136,8 +136,35 @@ logger(0, 'Accordion starting...');
 
 /* Configuration Loader */
 logger(0, 'Accordion loading configuration...');
-$json_raw = file_get_contents('accordion.cfg');
-$cfg = json_decode($json_raw);
+$json_raw = file_get_contents($argv[1]);
+if(!$json_raw) { die("Unable to open ".$json_raw."\n"); }
+
+/* Strip comments from the configuration file, as native JSON decoder does not support comments */
+$incomment = false;
+$json_uncommented = '';
+foreach(explode(PHP_EOL, $json_raw) as $line) {
+	if($incomment) {
+		if(0 === strpos(ltrim($line), "*/")) {
+			// End multiline comment
+			$incomment = false;
+		}
+	} else {
+		if(0 === strpos(ltrim($line), "//")) {
+			// Skip commented lines
+			continue;
+		}
+		if(0 === strpos(ltrim($line), "/*")) {
+			// Begin multiline comment
+			$incomment = true;
+		}
+		if(!$incomment) {
+			$json_uncommented .= $line;
+		}
+	}
+}
+	
+/* Parse configuration */
+$cfg = json_decode($json_uncommented);
 if(!$cfg) { die("Error parsing accordion.cfg!\n"); }
 $objs = $cfg->{'objects'};
 
