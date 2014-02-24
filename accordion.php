@@ -39,15 +39,43 @@ function driverSalesforceGetLastModified($sf, $bac, $objName) {
 }
 
 /**
+ * Returns number of entries that would be processed if we did not have a LIMIT predicate
+ *
+ * @return string 
+ */
+function driverSalesforceGetTotalRecords($sf, $bac, $objName, $lm, $predicate) {
+	$ts = $lm->format("Y-m-d\TH:i:s.000\Z");
+	// TODO: We should get all records that are >LM but also any with errors
+	$soql = "SELECT COUNT() FROM {$objName} WHERE ";
+	if($predicate) {
+		$soql .= $predicate.' AND ';
+	}
+	$soql .= "LastModifiedDate > {$ts}";
+	logger(3, 'SOQL:'.$soql);
+
+	$response = $sf->query($soql);
+	$result = $response->size;
+
+	$totalrecords = intval($result);
+	return $totalrecords;
+}
+
+/**
  * Utilises the Force.com Bulk API to perform SOQL queries, returning CSV output.
  *
  * @return string 
  */
-function driverSalesforceGetData($sf, $bac, $objName, $fields, $lm) {
+function driverSalesforceGetData($sf, $bac, $objName, $fields, $lm, $predicate) {
 	$selectFields = join(",", $fields);
 	$ts = $lm->format("Y-m-d\TH:i:s.000\Z");
-	$soql = "SELECT {$selectFields} FROM {$objName} "; /*WHERE LastModifiedDate > '{$ts}' ORDER BY LastModifiedDate DESC"; */
+	// TODO: We should get all records that are >LM but also any with errors
+	$soql = "SELECT {$selectFields} FROM {$objName} WHERE ";
+	if($predicate) {
+		$soql .= $predicate.' AND ';
+	}
+	$soql .= " LastModifiedDate > {$ts} ORDER BY LastModifiedDate DESC";
 	logger(3, 'SOQL:'.$soql);
+	// TODO: There is no LIMIT on Salesforce records. Adding one requires tracking bulk update status if no TS predicate is used.
 
 	$job = new JobInfo();
 	$job->setObject($objName);
@@ -73,6 +101,7 @@ function driverSalesforceGetData($sf, $bac, $objName, $fields, $lm) {
 	try {
 		logger(3, 'Retrieving list of results...');
 		$resultList = $bac->getBatchResultList($job->getId(), $batch->getId());
+		logger(4, print_r($resultList, true));
 		$resultId = $resultList[0];
 		logger(3, 'Retrieving result...');
 		$results = $bac->getBatchResult($job->getId(), $batch->getId(), $resultId);
@@ -99,8 +128,34 @@ function driverMySQLGetLastModified($link, $objName, $lmField) {
 	$result = mysqli_query($link, $sql);
 	if(!$result) { logger(2, 'ERROR: '.mysqli_error($link)); }
 	$row = mysqli_fetch_array($result);
-	$last_modified = $row[0];
-	return $last_modified;
+	$last_modified = $row['update_time'];
+	return date_create($last_modified);
+}
+
+/**
+ * Returns number of entries that would be processed if we did not have a LIMIT predicate
+ *
+ * @return string 
+ */
+function driverMySQLGetTotalRecords($link, $objName, $lmField, $lm, $predicate) {
+	$ts = $lm->format('Y-m-d H:i:s');
+	// TODO: We should get all records that are >LM but also any with errors
+	$sql = "SELECT COUNT(*) FROM {$objName} WHERE ";
+	print $sql."\n";
+	if($predicate != '') {
+		$sql .= $predicate.' AND ';
+	}
+	$sql .= " Sync_Last IS NULL AND ";
+	$sql .= "{$lmField} > '{$ts}' ORDER BY {$lmField} DESC";
+	logger(3, 'Count SOQL:'.$sql);
+
+	$result = mysqli_query($link, $sql);
+	if(!$result) { logger(2, 'ERROR: '.mysqli_error($link)); }
+
+	$row = mysqli_fetch_array($result);
+	$totalrecords = intval($row[0]);
+	logger(2, "There are {$totalrecords} records");
+	return $totalrecords;
 }
 
 /**
@@ -108,11 +163,18 @@ function driverMySQLGetLastModified($link, $objName, $lmField) {
  *
  * @return string 
  */
-function driverMySQLGetData($link, $objName, $fields, $lmField, $lm) {
+function driverMySQLGetData($link, $objName, $fields, $lmField, $lm, $predicate) {
 	$selectFields = join(",", $fields);
-	$mylm = $lm->format('Y-m-d H:i:s');
-	$sql = "SELECT {$selectFields} FROM {$objName} WHERE {$lmField} > '{$mylm}' ORDER BY {$lmField} DESC";
+	$ts = $lm->format('Y-m-d H:i:s');
+	// TODO: We should get all records that are >LM but also any with errors
+	$sql = "SELECT {$selectFields} FROM {$objName} WHERE ";
 	print $sql."\n";
+	if($predicate != '') {
+		$sql .= $predicate.' AND ';
+	}
+	$sql .= " Sync_Last IS NULL AND ";
+	$sql .= " {$lmField} > '{$ts}' ORDER BY {$lmField} DESC LIMIT 10000";
+	logger(3, 'SOQL:'.$sql);
 
 	$results = array();
 
@@ -234,23 +296,27 @@ foreach($objs as $objname => $obj) {
 			$matches = preg_match_all("/^(\d+|'.*')$/", $srcField, $srcFieldValue, PREG_SET_ORDER);
 			logger(2, $matches);
 			if($matches == 0) {
-				array_push($selectFields, $srcField);
+				array_push($selectFields, $obj->{'srcTable'}.'.'.$srcField);
 			}
 		}
 	}
 
 	$data = array();
 	$errors = array();
+	$totalrecords = 0;
 	if($obj->{'src'} === "sf") {
 		// Retrieve data from Salesforce
 		logger(2, 'Retrieving '.$obj->{'srcTable'}.' from Salesforce');
-		$dataRaw = driverSalesforceGetData($sf, $bac, $obj->{'srcTable'}, array_unique($selectFields), $lm);
+		$totalrecords = driverSalesforceGetTotalRecords($sf, $bac, $obj->{'srcTable'}, $lm, array_key_exists('srcPredicate', $obj) ? $obj->{'srcPredicate'} : '');
+		$dataRaw = driverSalesforceGetData($sf, $bac, $obj->{'srcTable'}, array_unique($selectFields), $lm, array_key_exists('srcPredicate', $obj) ? $obj->{'srcPredicate'} : '');
 		$isFirstRow = true;
 		$fieldsToNames = array();
 		// Data is in CSV format - parse into dicts
 		$records = 0;
 		$multilineRowCatcher = NULL;
 		foreach(explode(PHP_EOL, $dataRaw) as $row) {
+			if($row == '') continue;
+			$row = str_replace("\\", "\\\\", $row);
 			if(substr($row, -strlen(1)) != '"') {
 				$row = str_replace("\r", "\n", $row);
 				$row = str_replace("\n", "\r", $row);
@@ -296,8 +362,12 @@ foreach($objs as $objname => $obj) {
 	} else if($obj->{'src'} === "db") {
 		// Retrieve data from MySQL
 		logger(1, 'Retrieving '.$obj->{'srcTable'}.' from MySQL');
-		$data = driverMySQLGetData($link, $obj->{'srcTable'}, $selectFields, $obj->{'lastModifiedField'}, $lm);
+		$totalrecords = driverMySQLGetTotalRecords($link, $obj->{'srcTable'}, $obj->{'lastModifiedField'}, $lm, array_key_exists('srcPredicate', $obj) ? $obj->{'srcPredicate'} : '');
+		$data = driverMySQLGetData($link, $obj->{'srcTable'}, $selectFields, $obj->{'lastModifiedField'}, $lm, array_key_exists('srcPredicate', $obj) ? $obj->{'srcPredicate'} : '');
 	}
+
+	logger(2, "Total of {$totalrecords} at source");
+	$numerrors = 0;
 
 	if(count($data) == 0) {
 		logger(2, 'No retrieved records at source.');
@@ -449,10 +519,17 @@ foreach($objs as $objname => $obj) {
 				// Call the mysql bind parameters with our assembled parameter array (called this way, because we need to pass a dynamic number of arguments)
 				call_user_func_array('mysqli_stmt_bind_param', array_merge(array($stmt, $dstPlaceholderTypes), $bindParams));
 
+				$erra = undef;
 				if(!$stmt->execute()) {
-//					array_push($errors, array('Id' => $datum['src']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_MYSQL: '.mysqli_error($link)."\n".print_r($data[i], true)."\n".date("d/m/Y H:i:s", time())));
-					array_push($errors, array('Id' => $datum['src']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_MYSQL: '.mysqli_error($link)));
+					$erra = array($obj->{'srcPrimaryKey'} => $datum['src'][ $obj->{'srcPrimaryKey'} ], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_MYSQL: '.mysqli_error($link)."\n".print_r($data[$i], true)."\n".date("d/m/Y H:i:s", time()));
+					$numerrors++;
+				} else {
+					$erra = array($obj->{'srcPrimaryKey'} => $datum['src'][ $obj->{'srcPrimaryKey'} ], 'Has_Sync_Error' => false, 'Sync_Error_Message' => '');
 				}
+				if(array_key_exists('srcSecondaryKey', $obj)) {
+					$erra[ $obj->{'srcSecondaryKey'} ] = $datum['src'][ $obj->{'srcSecondaryKey'} ];
+				}
+				array_push($errors, $erra);
 			}
 			unset($datum);
 			//mysqli_commit($link);
@@ -514,13 +591,15 @@ foreach($objs as $objname => $obj) {
 			$batchResults = $bac->getBatchResults($job->getId(), $batch->getId());
 
 			logger(2, $batchResults);
-			// logger(1, $bac->getLogs());
+# DEBUG
+#			logger(1, $bac->getLogs());
 
 			// Process results
 			$results = array();
 			$isFirstRow = true;
 			$fieldsToNames = array();
 			foreach(explode(PHP_EOL, $batchResults) as $row) {
+				if($row == '') continue;
 				$cols = str_getcsv($row);
 				if($isFirstRow) {
 					// If this is the first row, cache the field names from the CSV header
@@ -540,26 +619,31 @@ foreach($objs as $objname => $obj) {
 				}
 			}
 
-			// Populate errors
+			// Populate errors (and clear existing errors on success)
 			$i = 0; // We need to run a counter as the Salesforce error results do not include the record Id, but are in the same order as the request rows.
 			foreach($results as $entry) {
+				$erra = null;
 				if($entry['Success'] == 'false') {
-					logger(2, "ERROR: ".$entry['Error']);
-					logger(2, print_r($data[$i], true));
-					array_push($errors, array('Id' => $data[$i]['dst']['Id'], 'Has_Sync_Error__c' => true, 'Sync_Error_Message__c' => 'ERROR_SALESFORCE: '.$entry['Error']."\n".print_r($data[i], true)."\n".date("d/m/Y H:i:s", time())));
+//					logger(2, print_r($data[$i], true));
+					$erra = array($obj->{'srcPrimaryKey'} => $data[$i]['src'][ $obj->{'srcPrimaryKey'} ], 'Has_Sync_Error' => true, 'Sync_Error_Message' => 'ERROR_SALESFORCE: '.$entry['Error']."\n".print_r($data[$i], true)."\n".date("d/m/Y H:i:s", time()), 'salesforce_id' => $entry['Id']);
+					$numerrors++;
+				} else {
+					$erra = array($obj->{'srcPrimaryKey'} => $data[$i]['src'][ $obj->{'srcPrimaryKey'} ], 'Has_Sync_Error' => false, 'Sync_Error_Message' => '', 'salesforce_id' => $entry['Id']);
 				}
+				if(array_key_exists('srcSecondaryKey', $obj)) {
+					$erra[ $obj->{'srcSecondaryKey'} ] = $data[$i]['src'][ $obj->{'srcSecondaryKey'} ];
+				}
+				array_push($errors, $erra);
 				$i++;
 			}
-	*/
 		}
 	}
 
 	logger(3, print_r($errors, true));
 
-	if(count($errors) == 0) {
-		logger(2, 'No record errors to upload to Salesforce.');
-	} else {
-		$numerrors = count($errors);
+	if(count($data) == 0) {
+		// NOOP
+	} else if($obj->{'src'} === "sf") {
 		logger(2, "Uploading {$numerrors} errors to Salesforce");
 
 		$csvfh = fopen('php://temp/maxmemory:'. (256*1024*1024), 'r+'); // 256MB RAM, otherwise back to file
@@ -571,7 +655,7 @@ foreach($objs as $objname => $obj) {
 		rewind($csvfh);
 		$csv = stream_get_contents($csvfh);
 
-		logger(3, print_r($csv, true));
+		logger(4, print_r($csv, true));
 
 		$job = new JobInfo();
 		if($obj->{'src'} === "sf") {
@@ -596,19 +680,77 @@ foreach($objs as $objname => $obj) {
 
 		logger(2, 'Job completed.');
 		$batchResults = $bac->getBatchResults($job->getId(), $batch->getId());
-		logger(2, 'Error upload results');
-		logger(3, $batchResults);
+		// logger(2, 'Error upload results');
+		// logger(3, $batchResults);
 		logger(2, 'Error upload completed.');
+
+		logger(1, "Finished processing ".$obj->{'srcTable'});
+	} else if($obj->{'src'} == "db") {
+		logger(2, "Uploading {$numerrors} errors to Database");
+
+		// Construct and prepare SQL statement (with placeholder values)
+		$sql = "UPDATE ".$obj->{"srcTable"}." SET Has_Sync_Error=?,Sync_Error_Message=?,Sync_Last=NOW(),salesforce_id=? WHERE ".$obj->{'srcPrimaryKey'}."=?";
+		if(array_key_exists('srcSecondaryKey', $obj)) {
+			$sql .= ' AND '.$obj->{'srcSecondaryKey'}.'=?';
+		}
+		logger(3, "UPDATE SQL: {$sql}");
+		$stmt = mysqli_prepare($link, $sql);
+		if(!$stmt) { logger(2, 'ERROR: '.mysqli_error($link)); }
+
+		// For each data item...
+		foreach($errors as &$error) {
+			$fieldValues = array();
+			array_push($fieldValues, $error['Has_Sync_Error']);
+			array_push($fieldValues, $error['Sync_Error_Message']);
+			array_push($fieldValues, $error['salesforce_id']); // TODO: This will overwrite salesforce_id with NULL on the DB in cases where an SF error is thrown on an upsert for an existing record
+			array_push($fieldValues, $error[ $obj->{'srcPrimaryKey'} ]);
+			if(array_key_exists('srcSecondaryKey', $obj)) {
+				array_push($fieldValues, $error[ $obj->{'srcSecondaryKey'} ]);
+			}
+
+			// Convert the entries in the array to array references (as now required by call_user_func_array)
+			$bindParams = array();
+			foreach ($fieldValues as $key => $value) {
+				$bindParams[$key] = &$fieldValues[$key]; 
+			}
+
+			logger(3, print_r($bindParams, true));
+
+			// Call the mysql bind parameters with our assembled parameter array (called this way, because we need to pass a dynamic number of arguments)
+			
+			if(array_key_exists('srcSecondaryKey', $obj)) {
+				call_user_func_array('mysqli_stmt_bind_param', array_merge(array($stmt, 'issss'), $bindParams));
+			} else {
+				call_user_func_array('mysqli_stmt_bind_param', array_merge(array($stmt, 'isss'), $bindParams));
+			}
+
+			if(!$stmt->execute()) {
+				logger(4, 'ERROR_MYSQL: '.mysqli_error($link));
+			}
+		}
+		unset($datum);
+		//mysqli_commit($link);
+	}
+
+	if($obj->{'src'} == "db") {
+		$remainingrecords = $totalrecords - count($data);
+		logger(2, "There are {$remainingrecords} remaining");
+		array_push($retvalues, $remainingrecords);
+	} else {
+		array_push($retvalues, 0);
 	}
 
 	mysqli_commit($link);
 }
 logger(0, 'Finished processing.');
 
-logger(0, print_r($data, true));
+//logger(0, print_r($data, true));
 
-logger(0, print_r($errors, true));
+//logger(0, print_r($errors, true));
 
 $bac->clearLogs(); // Clear logging buffer
+
+// Exit with return code 0 = there are outstanding records, 1 = no further records to process
+exit(max($retvalues) > 0 ? 0 : 1);
 
 ?>
