@@ -269,13 +269,14 @@ $bac->setCompressionEnabled(true); //optional, but recommended. defaults to true
 
 /* Main Processing */
 logger(0, 'Begin processing...');
+$retvalues = array();
 foreach($objs as $objname => $obj) {
 	logger(1, "Processing ".$obj->{'srcTable'});
 	mysqli_autocommit($link, FALSE);
 
 	// Get the Last Modified Date of our destination
-	if($argv[1]) {
-		$lm = new DateTime("@".$argv[1]);
+	if(count($argv) == 3) {
+		$lm = new DateTime("@".$argv[2]);
 		logger(2, "Last modified criteria: ".$lm->format("d/m/Y H:i:s"));
 	} else if($obj->{'dst'} === "sf") {
 		logger(2, "Retrieving last modified timestamp from Salesforce");
@@ -402,7 +403,7 @@ foreach($objs as $objname => $obj) {
 					//          |                  |         |            |________________ The field to use for the value, if we find a match
 					//	    |                  |         |_____________________________ The field to search at the destination
 					//	    |                  |_______________________________________ The table to search at the destination
-					//          |_________________________________________________________ The field at the source from which to get the search value
+					//          |__________________________________________________________ The field at the source from which to get the search value
 					$lookupTable = $filterArgs[0];
 					$lookupUsing = $filterArgs[1];
 					$thenUse = $filterArgs[2];
@@ -410,8 +411,12 @@ foreach($objs as $objname => $obj) {
 					$lookupFieldValues = array();
 					foreach($data as &$datum) {
 						// Add the field value we're looking for to an array, to be unique'd and passed to the IN operand
-						$key = $datum['src'][$srcField];
-						array_push($lookupFieldValues, '"'.$key.'"');
+						if(array_key_exists($srcField, $datum['src'])) {
+							$key = $datum['src'][$srcField];
+							array_push($lookupFieldValues, '"'.$key.'"');
+						} else {
+							logger(4, 'Unable to find '.$srcField.' in '.print_r($datum, true));
+						}
 					}
 					unset($datum);
 
@@ -422,6 +427,7 @@ foreach($objs as $objname => $obj) {
 					if(!$stmt) { logger(4, 'ERROR: '.mysqli_error($link)); }
 					$map = array();
 					while($result = mysqli_fetch_array($stmt, MYSQLI_ASSOC)) {
+						logger(4, 'Result '.print_r($result, true));
 						$map[$result[$lookupUsing]] = $result[$thenUse];
 					}
 					
@@ -430,6 +436,24 @@ foreach($objs as $objname => $obj) {
 							$datum['dst'][$dstField] = $map[ $datum['src'][$srcField] ];
 						} else {
 							logger(4, 'Unable to find a mapping for: ' + $datum['src'][$srcField]);
+						}
+					}
+				} else if($filterCmd == 'DATETIME2SF') {
+					// e.g. password_expire_date->DATETIME2SF()->password_expire_date__c
+      					//          |                       |                   |_____________ The field to populate at the destination
+					//          |                       |_________________________________ This function, no arguments required
+					//          |_________________________________________________________ The field at the source from which to get the search value
+					foreach($data as &$datum) {
+						$value = $datum['src'][$srcField];
+						$nummatches = preg_match('/(\d+)-(\d+)-(\d+)T(\d+):(\d+):(\d+)\.\d+Z/', $value, $matches);
+						if($nummatches > 0) {
+							$dt = new DateTime();
+							$dt->setDate($matches[0], $matches[1], $matches[2]);
+							$dt->setTime($matches[3], $matches[4], $matches[5]);
+							$sfdt = $dt->format("Y-m-d\TH:i:s.000\Z");
+							$datum['dst'][$dstField] = $sfdt;
+						} else {
+							$datum['dst'][$dstField] = '';
 						}
 					}
 				} else if($filterCmd == 'SPLIT') {
@@ -443,11 +467,22 @@ foreach($objs as $objname => $obj) {
 						$components = explode(' ', $value);
 						$element = array_slice($components, $index);
 						$datum['dst'][$dstField] = $element[0];
-						logger(4, 'SPLIT: '.$value.' to '.$element[0]);
+						// logger(4, 'SPLIT: '.$value.' to '.$element[0]);
+					}
+				} else if($filterCmd == 'CONCAT') {
+					// e.g. Name->CONCAT(field)->last_name
+					//          |        |               |____ The field to populate at the destination
+					//          |        |____________________ The fields to concatenate on to the source value
+					//          |_____________________________ The field at the source from which to get the initial value
+					$field = $filterArgs[0];
+					foreach($data as &$datum) {
+						$value = $datum['src'][$srcField];
+						$cvalue = $datum['src'][$field];
+						$datum['dst'][$dstField] = $value.'-'.$cvalue;
 					}
 				}
 			} else if($numpipes == 1) {
-				$matches = preg_match_all("/^(\d+|'[^']+')->(.*)$/", $field, $srcField, PREG_SET_ORDER);
+				$matches = preg_match_all("/^(\d+|'[^']*')->(.*)$/", $field, $srcField, PREG_SET_ORDER);
 				if($matches == 1) {
 					// Straight - mapping of field to a static value e.g. 42->life_universe or 'turtles'->all_way_down
 					$srcFieldValue = $srcField[0][1];
@@ -567,15 +602,14 @@ foreach($objs as $objname => $obj) {
 			$csv = stream_get_contents($csvfh);
 
 			logger(2, 'Push to Salesforce');
-			// logger(2, print_r($csv, true));
+			logger(2, print_r($csv, true));
 
-	/*
 			$job = new JobInfo();
 			$job->setObject($obj->{'dstTable'});
 			$job->setOperation("upsert");
 			$job->setContentType("CSV");
 			$job->setConcurrencyMode("Parallel");                         //can also set to Serial
-			$job->setExternalIdFieldName("Id");
+			$job->setExternalIdFieldName($obj->{'dstPrimaryKey'});
 
 			$job = $bac->createJob($job);
 			$batch = $bac->createBatch($job, $csv);
@@ -663,10 +697,10 @@ foreach($objs as $objname => $obj) {
 		} else if($obj->{'dst'} === "sf") {
 			$job->setObject($obj->{'dstTable'});
 		}
-		$job->setOperation("upsert");
+		$job->setOperation("update");
 		$job->setContentType("CSV");
 		$job->setConcurrencyMode("Parallel");
-		$job->setExternalIdFieldName("Id");
+		$job->setExternalIdFieldName($obj->{'srcPrimaryKey'});
 
 		$job = $bac->createJob($job);
 		$batch = $bac->createBatch($job, $csv);
