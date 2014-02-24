@@ -132,6 +132,7 @@ function driverMySQLGetData($link, $objName, $fields, $lmField, $lm) {
 require_once('soapclient/SforcePartnerClient.php');
 require_once('bulkapiclient/BulkApiClient.php');
 
+if($argc < 2) { die("Syntax: php accordion.php config.ini lastmodifiedepoch\n"); }
 logger(0, 'Accordion starting...');
 
 /* Configuration Loader */
@@ -182,6 +183,17 @@ logger(0, 'Connecting to MySQL...');
 $link = mysqli_connect(MYSQL_HOST, MYSQL_USERNAME, MYSQL_PASSWORD, MYSQL_DATABASE);
 if(mysqli_connect_errno()) { die("Failed to connect to MySQL: ".mysqli_connect_error()."\n"); }
 
+$stmt = mysqli_query($link, 'SET character_set_results=utf8;');
+if(!$stmt) { logger(4, 'ERROR: '.mysqli_error($link)); }
+$stmt = mysqli_query($link, 'set names "utf8";');
+if(!$stmt) { logger(4, 'ERROR: '.mysqli_error($link)); }
+$stmt = mysqli_query($link, 'SET character_set_client=utf8;');
+if(!$stmt) { logger(4, 'ERROR: '.mysqli_error($link)); }
+$stmt = mysqli_query($link, 'SET character_set_connection=utf8;');
+if(!$stmt) { logger(4, 'ERROR: '.mysqli_error($link)); }
+mb_language('uni'); 
+mb_internal_encoding('UTF-8');
+
 /* Force.com API Connection */
 logger(0, 'Connecting to Salesforce...');
 $sf = new SforcePartnerClient();
@@ -197,6 +209,7 @@ $bac->setCompressionEnabled(true); //optional, but recommended. defaults to true
 logger(0, 'Begin processing...');
 foreach($objs as $objname => $obj) {
 	logger(1, "Processing ".$obj->{'srcTable'});
+	mysqli_autocommit($link, FALSE);
 
 	// Get the Last Modified Date of our destination
 	if($argv[1]) {
@@ -387,7 +400,6 @@ foreach($objs as $objname => $obj) {
 
 		if($obj->{'dst'} === "db") {
 			logger(2, 'Pushing to database...');
-			//mysqli_autocommit(FALSE);
 
 			$dstFields = array();
 			$dstFieldPlaceholders = array();
@@ -588,7 +600,8 @@ foreach($objs as $objname => $obj) {
 		logger(3, $batchResults);
 		logger(2, 'Error upload completed.');
 	}
-	logger(1, "Finished processing ".$obj->{'srcTable'});
+
+	mysqli_commit($link);
 }
 logger(0, 'Finished processing.');
 
